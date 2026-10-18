@@ -19,6 +19,84 @@ import {
 } from 'lucide-react';
 import { COLOR, FEEDER, MUNCHLET, PixelArt } from './munch/sprites';
 
+/** The fields of /api/status the health panel reads. */
+interface EngineHealth {
+  status: string;
+  tokenAddress: string;
+  walletAddress: string;
+  lastTickAt?: number;
+  busy?: boolean;
+  busyForSeconds?: number;
+  operatorBalanceETH?: string;
+  gasLow?: boolean;
+  uptimeSeconds?: number;
+  totalCyclesExecuted?: number;
+  escrowBalanceETH?: string;
+  nextCycleType?: string;
+}
+
+const ago = (sec: number) => (sec < 60 ? `${sec}s` : sec < 3600 ? `${Math.floor(sec / 60)}m` : `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m`);
+
+/**
+ * One line on the engine: is it answering, is its loop beating, is it busy, does the
+ * operator have gas. Read straight from the bot, so it is the truth, not a guess.
+ */
+function HealthPanel({ health, error, now }: { health: EngineHealth | null; error: boolean; now: number }) {
+  let tone: 'ok' | 'warn' | 'bad' = 'ok';
+  let headline = 'checking…';
+  const notes: string[] = [];
+  if (error || !health) {
+    if (error) {
+      tone = 'bad';
+      headline = 'OFFLINE: the engine is not answering';
+      notes.push('The server watchdog restarts it within 5 minutes. If this stays, check pm2 on the server.');
+    }
+  } else {
+    const beat = health.lastTickAt ? Math.max(0, Math.round((now - health.lastTickAt) / 1000)) : null;
+    if (beat !== null && beat > 90) {
+      tone = 'bad';
+      headline = `STUCK: no heartbeat for ${ago(beat)}`;
+      notes.push('The watchdog restarts it; a run in progress resumes where it stopped.');
+    } else if (!health.tokenAddress) {
+      tone = 'warn';
+      headline = 'STANDBY: waiting for the token CA';
+    } else if (!health.walletAddress) {
+      tone = 'warn';
+      headline = 'STANDBY: waiting for the keeper key';
+    } else if (health.busy) {
+      headline = `RUNNING: feeding now (${health.busyForSeconds ?? 0}s)`;
+    } else {
+      headline = `RUNNING: watching the bowl · ${health.escrowBalanceETH ?? '0'} ETH in it`;
+    }
+    if (health.gasLow) {
+      tone = tone === 'bad' ? 'bad' : 'warn';
+      notes.push(`Gas is low: the keeper wallet has ${Number(health.operatorBalanceETH || 0).toFixed(5)} ETH. Top it up or the next claim fails.`);
+    }
+    const bits = [
+      beat !== null ? `heartbeat ${ago(beat)} ago` : null,
+      health.uptimeSeconds !== undefined ? `up ${ago(health.uptimeSeconds)}` : null,
+      health.operatorBalanceETH ? `gas ${Number(health.operatorBalanceETH).toFixed(4)} ETH` : null,
+      `${health.totalCyclesExecuted ?? 0} feedings`,
+      health.nextCycleType ? `next: ${health.nextCycleType === 'keep' ? 'snack jar' : 'meal'}` : null,
+    ].filter(Boolean);
+    notes.unshift(bits.join(' · '));
+  }
+  const ring = tone === 'bad' ? 'var(--color-bubble-lo)' : tone === 'warn' ? 'var(--color-sun)' : 'var(--color-lcd-ink)';
+  return (
+    <div className={`mb-5 rounded-xl p-3.5 ${tone === 'bad' ? 'bg-cream' : 'lcd'}`} style={{ boxShadow: `inset 0 0 0 3px ${ring}` }} aria-live="polite">
+      <div className={`flex items-center gap-2 font-lcd text-[0.95rem] uppercase ${tone === 'bad' ? 'text-bubble-lo' : ''}`}>
+        <span className={`inline-block h-2.5 w-2.5 ${tone === 'ok' ? 'nom-blink' : ''}`} style={{ background: ring }} aria-hidden="true" />
+        engine · {headline}
+      </div>
+      {notes.map((n) => (
+        <p key={n} className={`m-0 mt-1.5 font-mono text-[0.75rem] leading-snug ${tone === 'bad' ? 'text-ink' : ''}`}>
+          {n}
+        </p>
+      ))}
+    </div>
+  );
+}
+
 interface MemexAdminProps {
   onBack?: () => void;
 }
@@ -39,6 +117,34 @@ export function MemexAdmin({ onBack }: MemexAdminProps) {
   const [statusMessage, setStatusMessage] = useState<string>('');
   // Operator wallet the bot is currently running with (its key never leaves the server)
   const [botWallet, setBotWallet] = useState<string>('');
+  // The engine's health, read from /api/status every few seconds
+  const [health, setHealth] = useState<EngineHealth | null>(null);
+  const [healthError, setHealthError] = useState<boolean>(false);
+  const [now, setNow] = useState<number>(Date.now());
+
+  useEffect(() => {
+    let alive = true;
+    const poll = async () => {
+      try {
+        const res = await fetch('/api/status', { cache: 'no-store' });
+        const json = await res.json();
+        if (!alive) return;
+        if (res.ok && json?.data) {
+          setHealth(json.data as EngineHealth);
+          setHealthError(false);
+        } else setHealthError(true);
+      } catch {
+        if (alive) setHealthError(true);
+      }
+      if (alive) setNow(Date.now());
+    };
+    poll();
+    const id = window.setInterval(poll, 5000);
+    return () => {
+      alive = false;
+      window.clearInterval(id);
+    };
+  }, []);
 
   // Load the current config from the bot; nothing is kept in browser storage
   useEffect(() => {
@@ -317,6 +423,8 @@ export function MemexAdmin({ onBack }: MemexAdminProps) {
               </div>
               <PixelArt rows={FEEDER} pal={COLOR} className="hidden h-20 w-20 shrink-0 sm:block" />
             </div>
+
+            <HealthPanel health={health} error={healthError} now={now} />
 
             <form onSubmit={handleSave} className="space-y-6 rounded-2xl bg-cream p-5 text-ink shadow-[0_0_0_3px_var(--color-ink)] sm:p-6">
               {/* Field 0: Admin secret, needed for every change */}

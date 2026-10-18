@@ -111,7 +111,7 @@ async function main() {
   const devBag = (await token.balanceOf(operator.address)) as bigint;
   assert.ok(devBag >= DEV_BAG, "the dev buy landed");
 
-  const env = { RPC_URL: RPC, PORT: String(PORT), TOKEN_ADDRESS: TOKEN, TREASURY_ADDRESS: treasury, CREATOR_PRIVATE_KEY: OPERATOR_KEY, POLL_INTERVAL_SECONDS: "1", ADMIN_SECRET };
+  const env = { RPC_URL: RPC, PORT: String(PORT), TOKEN_ADDRESS: TOKEN, TREASURY_ADDRESS: treasury, CREATOR_PRIVATE_KEY: OPERATOR_KEY, POLL_INTERVAL_SECONDS: "1", ADMIN_SECRET, TX_TIMEOUT_SECONDS: "5" };
   startEngine(env);
 
   console.log("\nStart-up");
@@ -190,6 +190,26 @@ async function main() {
   await until("the bot to come back", () => status());
   await sleep(4000);
   ok((await dead()) - dead3 === burned3 && (await status()).totalCyclesExecuted === 3, "a second restart after the run is done burns nothing more");
+
+  console.log("\nKeep #4, with the claim stuck in the mempool");
+  const t4 = await bal(treasury);
+  await provider.send("evm_setAutomine", [false]);
+  await deployer.sendTransaction({ to: ESCROW, value: E("0.02") });
+  await provider.send("hardhat_mine", ["0x1"]);
+  await until("the claim of cycle #4 to be sent", async () => (/Cycle #4 - KEEP\] THRESHOLD[\s\S]*Claim Tx broadcasted/.test(log()) ? true : null));
+  const nonce4 = await provider.getTransactionCount(operator.address, "latest");
+  await sleep(14000);
+  const timeouts = (log().match(/still pending after 5s/g) || []).length;
+  ok(timeouts >= 2, `a claim stuck in the mempool times out and is checked again, instead of hanging the loop (${timeouts} checks)`);
+  const st4 = await status();
+  ok(Date.now() - st4.lastTickAt < 8000 && st4.busyForSeconds <= 7, `the heartbeat keeps beating while it is stuck (busy for ${st4.busyForSeconds}s at most per check)`);
+  const pending4 = (await provider.getTransactionCount(operator.address, "pending")) - nonce4;
+  ok(pending4 === 1, `the stuck claim is never sent a second time (${pending4} pending)`);
+  await provider.send("hardhat_mine", ["0x1"]);
+  await provider.send("evm_setAutomine", [true]);
+  await cyclesDone(4);
+  ok((await bal(treasury)) - t4 === E("0.02"), "once it is mined the run finishes: the 0.02 ETH reaches the treasury");
+  ok(st4.operatorBalanceETH !== "" && st4.gasLow === false, `the operator's gas is reported (${st4.operatorBalanceETH} ETH, not low)`);
 
   await stopEngine();
   console.log(`\n${passed} checks passed, ${findings.length} findings.`);

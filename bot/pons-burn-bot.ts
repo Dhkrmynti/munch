@@ -163,6 +163,10 @@ const botState = {
   totalFeesRetainedETH: "0.0",
   totalCyclesExecuted: currentConfig.cycleCount,
   lastCycleTime: "",
+  // health: when the loop last ran (ms since epoch), the operator's gas, and whether it is low
+  lastTickAt: Date.now(),
+  operatorBalanceETH: "",
+  gasLow: false,
   logs: initialLogs
 };
 
@@ -238,26 +242,60 @@ function savePending(run: PendingRun | null) {
     addLog("error", `Could not save bot-run.json: ${e.message}`);
   }
 }
+// A transaction is waited on for this long at most. A slower one is not resent: its hash stays
+// saved and the next poll checks it again, so the loop never hangs and nothing is sent twice.
+const TX_TIMEOUT_MS = Math.max(5, parseInt(process.env.TX_TIMEOUT_SECONDS || "180", 10)) * 1000;
+// A cycle running longer than this is stuck (an RPC that never answers): the process exits and
+// PM2 starts it again; bot-run.json makes the restart pick the same run back up.
+const WATCHDOG_MS = Math.max(1, parseInt(process.env.WATCHDOG_MINUTES || "15", 10)) * 60_000;
+// Below this the operator wallet may not pay the next claim's gas
+const GAS_LOW_ETH = process.env.GAS_LOW_ETH || "0.002";
+
+/** Waits for one confirmation, at most TX_TIMEOUT_MS; a timeout throws and the run retries later. */
+async function mined(tx: ethers.TransactionResponse) {
+  try {
+    return await tx.wait(1, TX_TIMEOUT_MS);
+  } catch (e: any) {
+    if (e?.code === "TIMEOUT") throw new Error(`tx ${tx.hash} still pending after ${TX_TIMEOUT_MS / 1000}s; will check it again`);
+    throw e;
+  }
+}
+
 /** Always the chain's next nonce for the operator, never a cached one. */
 const nextNonce = () => provider!.getTransactionCount(wallet!.address, "pending");
-/** true: mined and succeeded; false: reverted or never made it (safe to send again). */
+/**
+ * true: mined and succeeded; false: reverted or dropped (safe to send again).
+ * Still pending after TX_TIMEOUT_MS: throws, so the hash is kept and nothing is sent twice.
+ */
 async function settle(hash: string): Promise<boolean> {
   const rc = await provider!.getTransactionReceipt(hash);
   if (rc) return rc.status === 1;
   const tx = await provider!.getTransaction(hash);
   if (!tx) return false;
-  const mined = await tx.wait().catch(() => null);
-  return !!mined && mined.status === 1;
+  try {
+    const r = await tx.wait(1, TX_TIMEOUT_MS);
+    return !!r && r.status === 1;
+  } catch (e: any) {
+    if (e?.code === "TIMEOUT") throw new Error(`tx ${hash} still pending after ${TX_TIMEOUT_MS / 1000}s; will check it again`);
+    return false;
+  }
 }
 
 // Execution Cycle
 let isExecuting = false;
+let cycleStartedAt = 0;
+let lastGasWarn = 0;
 
 async function executeCycle() {
   if (isExecuting) {
-    addLog("warn", "Cycle currently executing, skipping this poll tick.");
+    // the heartbeat only beats while a running cycle is within the watchdog's limit
+    if (Date.now() - cycleStartedAt > WATCHDOG_MS) {
+      addLog("error", `[WATCHDOG] A cycle has been running for over ${WATCHDOG_MS / 60_000} min. Restarting the engine; the saved run resumes.`);
+      setTimeout(() => process.exit(1), 500);
+    } else botState.lastTickAt = Date.now();
     return;
   }
+  botState.lastTickAt = Date.now();
 
   botState.tokenAddress = currentConfig.tokenAddress;
   botState.curveAddress = currentConfig.curveAddress;
@@ -272,6 +310,19 @@ async function executeCycle() {
     botState.status = "error";
     addLog("error", "Wallet or RPC Provider not ready.");
     return;
+  }
+
+  // gas for the next claim: shown in /api/status, and a warning every 10 min while it is low
+  try {
+    const gasBal = await provider.getBalance(wallet.address);
+    botState.operatorBalanceETH = ethers.formatEther(gasBal);
+    botState.gasLow = gasBal < ethers.parseEther(GAS_LOW_ETH);
+    if (botState.gasLow && Date.now() - lastGasWarn > 10 * 60_000) {
+      lastGasWarn = Date.now();
+      addLog("warn", `[GAS] The operator wallet has ${botState.operatorBalanceETH} ETH (under ${GAS_LOW_ETH}). Top it up or the next claim may fail.`);
+    }
+  } catch {
+    // RPC hiccup: the cycle below reports it
   }
 
   // Auto-detect Curve from Token CA if not set or different
@@ -298,6 +349,7 @@ async function executeCycle() {
 
   if (BURN_ONLY) {
     isExecuting = true;
+    cycleStartedAt = Date.now();
     try {
       const feeEscrow = new ethers.Contract(PONS_FEE_ESCROW, ESCROW_ABI, wallet);
       const token = new ethers.Contract(currentConfig.tokenAddress, ERC20_ABI, wallet);
@@ -313,7 +365,7 @@ async function executeCycle() {
         const burnNonce = await provider.getTransactionCount(wallet.address, "latest");
         const burnTx = await token.transfer(DEAD_ADDRESS, tokenBalance, { nonce: burnNonce });
         addLog("info", `Burn Tx broadcasted: ${burnTx.hash}`);
-        await burnTx.wait();
+        await mined(burnTx);
         addLog("success", `COMPLETED: ${formattedBalance} $${tokenSymbol} PERMANENTLY INCINERATED!`);
       } else if (Date.now() - lastBurnOnlyIdleLog > 60_000) {
         lastBurnOnlyIdleLog = Date.now();
@@ -340,6 +392,7 @@ async function executeCycle() {
   botState.claimThresholdETH = cycleThresholdETH;
 
   isExecuting = true;
+  cycleStartedAt = Date.now();
   botState.status = "active";
 
   try {
@@ -403,7 +456,7 @@ async function executeCycle() {
       run.claimTx = claimTx.hash;
       savePending(run);
       addLog("info", `Claim Tx broadcasted: ${claimTx.hash}`);
-      const rc = await claimTx.wait();
+      const rc = await mined(claimTx);
       if (!rc || rc.status !== 1) throw new Error(`claim ${claimTx.hash} failed`);
       run.claimed = true;
       savePending(run);
@@ -459,7 +512,7 @@ async function executeCycle() {
         run.buyTx = buyTx.hash;
         savePending(run);
         addLog("info", `Buyback Tx broadcasted: ${buyTx.hash}`);
-        const rc = await buyTx.wait();
+        const rc = await mined(buyTx);
         if (!rc || rc.status !== 1) throw new Error(`buy ${buyTx.hash} failed`);
         run.bought = true;
         savePending(run);
@@ -486,7 +539,7 @@ async function executeCycle() {
           run.burnTx = burnTx.hash;
           savePending(run);
           addLog("info", `Burn Tx broadcasted: ${burnTx.hash}`);
-          const rc = await burnTx.wait();
+          const rc = await mined(burnTx);
           if (!rc || rc.status !== 1) throw new Error(`burn ${burnTx.hash} failed`);
           addLog("success", `COMPLETED: ${formatted} $${tokenSymbol} PERMANENTLY INCINERATED!`);
         } else {
@@ -516,7 +569,7 @@ async function executeCycle() {
           const sendTx = await wallet.sendTransaction({ to: currentConfig.treasuryAddress, value: sendWei, nonce: await nextNonce() });
           run.sendTx = sendTx.hash;
           savePending(run);
-          const rc = await sendTx.wait();
+          const rc = await mined(sendTx);
           if (!rc || rc.status !== 1) throw new Error(`treasury send ${sendTx.hash} failed`);
           addLog("success", `[KEEP] Successfully forwarded ${ethers.formatEther(sendWei)} ETH to Treasury! Tx: ${sendTx.hash}`);
         }
@@ -607,6 +660,12 @@ const server = http.createServer(async (req, res) => {
         totalCyclesExecuted: botState.totalCyclesExecuted,
         nextCycleType: (botState.totalCyclesExecuted + 1) % 2 === 1 ? "burn" : "keep",
         lastCycleTime: botState.lastCycleTime,
+        lastTickAt: botState.lastTickAt,
+        busy: isExecuting,
+        busyForSeconds: isExecuting ? Math.round((Date.now() - cycleStartedAt) / 1000) : 0,
+        operatorBalanceETH: botState.operatorBalanceETH,
+        gasLow: botState.gasLow,
+        uptimeSeconds: Math.round(process.uptime()),
         pollIntervalSeconds: currentConfig.pollIntervalSeconds,
         logs: botState.logs
       }

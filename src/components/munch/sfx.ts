@@ -2,7 +2,8 @@
  * MUNCH's sounds, synthesised like a cheap handheld: square, triangle and noise, the same
  * recipes as the X kit (konten-x/studio/scripts/munch-sfx.mjs). Nothing is sampled or
  * downloaded; each sound is rendered once into a buffer the first time it plays.
- * Browsers only allow audio after a tap or key, so the music starts on the first one.
+ * Browsers only allow audio after a tap or key, so the music (MUNCH's theme, about 1:36,
+ * looping) starts on the first one.
  */
 
 type Wave = 'square' | 'tri' | 'noise';
@@ -59,33 +60,124 @@ const RECIPES: Record<SfxName, { sec: number; notes: Note[] }> = {
   },
 };
 
-/** The 8-bar loop from the teaser: 120 bpm, Am F C G, lead on square, bass on triangle, noise hats. */
-function loopNotes(): { sec: number; notes: Note[] } {
-  const beat = 0.5;
-  const bars = 8;
-  const prog = [57, 53, 60, 55];
-  const lead = [
-    [69, 72, 76, 72, 74, 72, 69, null],
-    [65, 69, 72, 69, 72, 74, 72, null],
-    [72, 76, 79, 76, 77, 76, 72, 74],
-    [71, 74, 79, 74, 76, 74, 71, null],
-  ];
-  const notes: Note[] = [];
-  for (let bar = 0; bar < bars; bar++) {
-    for (let q = 0; q < 8; q++) {
-      const at = bar * 4 * beat + q * (beat / 2);
-      notes.push({ wave: 'tri', f: hz(prog[bar % 4] - 12 + (q % 2 ? 12 : 0)), at, len: beat / 2, vol: 0.22, decay: 1.5 });
-      const m = bar >= 2 ? lead[bar % 4][q] : null;
-      if (m) notes.push({ f: hz(m), at, len: beat / 2 - 0.02, vol: 0.075, decay: 2, duty: 0.25 });
-      if (q % 2) notes.push({ wave: 'noise', at, len: 0.03, vol: 0.05, decay: 8 });
-    }
-  }
-  // exactly 8 bars long, so it loops without a gap
-  return { sec: bars * 4 * beat, notes };
+/** One bar of the song: its chord root, the lead (eight 8th notes, null = rest) and how the rest plays. */
+interface Bar {
+  root: number;
+  lead?: (number | null)[];
+  /** chord tones for 16th-note arpeggios */
+  arp?: number[];
+  /** walk: root and octave in 8ths · hold: two long notes · drive: the root in 8ths */
+  bass?: 'walk' | 'hold' | 'drive';
+  /** 0: none · 1: off-beats · 2: off-beats and soft 16ths */
+  hats?: 0 | 1 | 2;
+  /** shift the lead by this many semitones */
+  up?: number;
+  leadVol?: number;
 }
 
-function render(ctx: BaseAudioContext, sec: number, notes: Note[]): AudioBuffer {
-  const sr = ctx.sampleRate;
+// chord tones for the arpeggios
+const AM = [69, 72, 76, 81];
+const F = [65, 69, 72, 77];
+const C = [72, 76, 79, 84];
+const G = [67, 71, 74, 79];
+const DM = [62, 65, 69, 74];
+const E = [64, 68, 71, 76];
+const EM = [64, 67, 71, 76];
+
+// the teaser's tune
+const A1 = [69, 72, 76, 72, 74, 72, 69, null];
+const A2 = [65, 69, 72, 69, 72, 74, 72, null];
+const A3 = [72, 76, 79, 76, 77, 76, 72, 74];
+const A4 = [71, 74, 79, 74, 76, 74, 71, null];
+const A4UP = [71, 74, 79, 81, 79, 76, 74, null];
+
+const phraseA = (opts: Partial<Bar> = {}, lift = false): Bar[] => [
+  { root: 57, lead: A1, arp: AM, ...opts },
+  { root: 53, lead: A2, arp: F, ...opts },
+  { root: 60, lead: A3, arp: C, ...opts },
+  { root: 55, lead: lift ? A4UP : A4, arp: G, ...opts },
+];
+
+/**
+ * MUNCH's theme: 48 bars at 120 bpm (about 1:36), written to loop without a seam.
+ * Intro, the teaser's tune, a brighter B, an LCD arpeggio breakdown, the tune up an octave,
+ * a tense bridge, and the tune again leading back into the intro.
+ */
+function songBars(): Bar[] {
+  const intro: Bar[] = [57, 53, 60, 55].map((root) => ({ root, bass: 'walk', hats: 1 }));
+  const a: Bar[] = [...phraseA({ bass: 'walk', hats: 1 }), ...phraseA({ bass: 'walk', hats: 1 }, true)];
+  const b: Bar[] = (
+    [
+      [53, [77, null, 76, 77, null, 72, 69, 72]],
+      [55, [74, null, 72, 74, null, 71, 67, 71]],
+      [52, [76, null, 74, 76, 79, 76, 74, 71]],
+      [57, [72, null, 69, 72, 76, null, 72, null]],
+      [53, [77, 79, 81, 79, 77, 76, 77, null]],
+      [55, [79, null, 77, 76, 74, null, 71, 74]],
+      [60, [76, null, 72, 76, 79, null, 84, null]],
+      [60, [84, null, 79, null, 76, null, 72, null]],
+    ] as [number, (number | null)[]][]
+  ).map(([root, lead]) => ({ root, lead, bass: 'walk', hats: 2 }));
+  const breakdown: Bar[] = [
+    { root: 57, arp: AM, bass: 'hold', hats: 0 },
+    { root: 53, arp: F, bass: 'hold', hats: 0 },
+    { root: 60, arp: C, bass: 'hold', hats: 0 },
+    { root: 55, arp: G, bass: 'hold', hats: 1 },
+  ];
+  const aUp: Bar[] = [...phraseA({ bass: 'walk', hats: 2, up: 12, leadVol: 0.055 }), ...phraseA({ bass: 'walk', hats: 2, up: 12, leadVol: 0.055 }, true)];
+  const bridge: Bar[] = (
+    [
+      [50, [74, null, 77, null, 81, 79, 77, 74], DM],
+      [57, [76, null, 72, null, 69, 72, 76, null], AM],
+      [52, [71, 74, 76, 80, 76, 74, 71, 68], E],
+      [52, [76, null, null, null, 80, null, 83, null], E],
+      [50, [77, 76, 74, null, 77, 79, 81, null], DM],
+      [57, [84, null, 81, null, 76, null, 72, null], AM],
+      [52, [80, null, 76, null, 71, null, 68, null], EM],
+      [55, [67, 71, 74, 77, 79, 77, 74, 71], G],
+    ] as [number, (number | null)[], number[]][]
+  ).map(([root, lead, arp]) => ({ root, lead, arp, bass: 'drive', hats: 1 }));
+  const outro: Bar[] = [...phraseA({ bass: 'walk', hats: 1 }), ...phraseA({ bass: 'walk', hats: 1 })];
+  return [...intro, ...a, ...b, ...breakdown, ...aUp, ...bridge, ...outro];
+}
+
+export function songNotes(): { sec: number; notes: Note[] } {
+  const beat = 0.5;
+  const eighth = beat / 2;
+  const bars = songBars();
+  const notes: Note[] = [];
+  bars.forEach((bar, i) => {
+    const t0 = i * 4 * beat;
+    const lo = bar.root - 12;
+    // bass on triangle
+    if (bar.bass === 'hold') {
+      [0, 2 * beat].forEach((at) => notes.push({ wave: 'tri', f: hz(lo), at: t0 + at, len: 2 * beat - 0.02, vol: 0.24, decay: 1 }));
+    } else {
+      for (let q = 0; q < 8; q++) notes.push({ wave: 'tri', f: hz(bar.bass === 'drive' ? lo : lo + (q % 2 ? 12 : 0)), at: t0 + q * eighth, len: eighth, vol: 0.22, decay: 1.5 });
+    }
+    // lead on a thin square
+    bar.lead?.forEach((m, q) => {
+      if (m) notes.push({ f: hz(m + (bar.up ?? 0)), at: t0 + q * eighth, len: eighth - 0.02, vol: bar.leadVol ?? 0.075, decay: 2, duty: 0.25 });
+    });
+    // arpeggios in 16ths: alone in the breakdown, quiet under the lead elsewhere
+    if (bar.arp && (!bar.lead || bar.up)) {
+      const order = [0, 1, 2, 3, 2, 1];
+      for (let k = 0; k < 16; k++) notes.push({ f: hz(bar.arp[order[k % order.length]] + (bar.lead ? 12 : 0)), at: t0 + k * (eighth / 2), len: eighth / 2 - 0.01, vol: bar.lead ? 0.028 : 0.06, decay: 3, duty: 0.125 });
+    }
+    // hats on noise
+    if (bar.hats) {
+      for (let k = 0; k < 16; k++) {
+        const off = k % 4 === 2;
+        if (off || (bar.hats === 2 && k % 2 === 1)) notes.push({ wave: 'noise', at: t0 + k * (eighth / 2), len: 0.03, vol: off ? 0.05 : 0.022, decay: 8 });
+      }
+    }
+  });
+  // exactly the song's length, so the loop has no gap
+  return { sec: bars.length * 4 * beat, notes };
+}
+
+export function render(ctx: Pick<BaseAudioContext, 'sampleRate' | 'createBuffer'>, sec: number, notes: Note[], rate?: number): AudioBuffer {
+  const sr = rate ?? ctx.sampleRate;
   const buf = ctx.createBuffer(1, Math.ceil(sec * sr), sr);
   const out = buf.getChannelData(0);
   let seed = 7;
@@ -132,13 +224,13 @@ class MunchSfx {
     return this.ctx;
   }
 
-  private buffer(name: string, make: () => { sec: number; notes: Note[] }) {
+  private buffer(name: string, make: () => { sec: number; notes: Note[] }, rate?: number) {
     const ctx = this.audio();
     if (!ctx) return null;
     let b = this.buffers.get(name);
     if (!b) {
       const { sec, notes } = make();
-      b = render(ctx, sec, notes);
+      b = render(ctx, sec, notes, rate);
       this.buffers.set(name, b);
     }
     return b;
@@ -188,7 +280,7 @@ class MunchSfx {
   private startMusic() {
     if (this.music) return;
     try {
-      const b = this.buffer('loop', loopNotes);
+      const b = this.buffer('song', songNotes, 22050);
       if (!b || !this.ctx || !this.musicGain) return;
       const src = this.ctx.createBufferSource();
       src.buffer = b;
