@@ -27,8 +27,9 @@ const MemexAdmin = lazy(() => import('./components/MemexAdmin'));
 /** What MUNCH says when you feed it by hand. */
 const MUNCH_SAYS = ['nom.', 'crunchy.', 'more.', 'burp.', 'tastes like supply.', 'odd feedings: me. even: the jar.', 'no refunds.', 'keep trading, keeper.', 'that one was fat.'];
 
-/** X account for the project: empty until there is one. */
-const X_URL = '';
+/** The project's X account. */
+const X_URL = 'https://x.com/munch_rh';
+const X_HANDLE = '@munch_rh';
 const EXPLORER_URL = 'https://explorer.mainnet.chain.robinhood.com';
 /** Where to trade and where to watch, once the CA is known. */
 const buyUrl = (ca: string) => (ca ? `https://ponsfamily.com/launchpad/${ca}` : EXPLORER_URL);
@@ -256,7 +257,7 @@ export function App() {
         <BoxBack tokenSymbol={tokenSymbol} deadAddress={deadAddress} />
 
         {/* ───────── MUNCH eats the screen ───────── */}
-        <Finale tokenSymbol={tokenSymbol} buyHref={buyUrl(config.tokenAddress)} tokenAddress={config.tokenAddress} copiedCA={copiedCA} onCopyCA={copyCA} />
+        <Finale tokenSymbol={tokenSymbol} buyHref={buyUrl(config.tokenAddress)} tokenAddress={config.tokenAddress} copiedCA={copiedCA} onCopyCA={copyCA} xHref={X_URL} xHandle={X_HANDLE} />
 
         <footer className="relative bg-ink">
           <div className="mx-auto flex max-w-[84rem] flex-col gap-4 px-4 pb-12 pt-8 text-[0.95rem] text-star-dim sm:flex-row sm:items-center sm:justify-between sm:px-10 lg:px-16">
@@ -265,6 +266,9 @@ export function App() {
               <span className="font-semibold text-cream">{tokenSymbol} on Robinhood Chain</span>
             </div>
             <p className="m-0 max-w-[52ch]">Meals and snack-jar feedings are done by a bot and every one is on chain. A meme, not financial advice.</p>
+            <a href={X_URL} target="_blank" rel="noreferrer" className="font-semibold text-cream no-underline hover:text-sun">
+              {X_HANDLE} on X
+            </a>
             <div className="font-mono text-[0.8rem]">
               Chain ID 4663 · {!isConfigured ? 'MUNCH is asleep' : state.isWheelSpinning ? 'feeding now' : 'auto-feeder on'}
             </div>

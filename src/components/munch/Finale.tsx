@@ -13,6 +13,9 @@ interface FinaleProps {
   tokenAddress: string;
   copiedCA: boolean;
   onCopyCA: () => void;
+  /** the project's X account, shown as a follow key next to buy */
+  xHref?: string;
+  xHandle?: string;
 }
 
 /** The inside of MUNCH's open mouth, in the 24 by 22 grid: columns 4–19, rows 11–13. */
@@ -22,7 +25,7 @@ const MOUTH = { x: 4 / 24, y: 11 / 22, w: 16 / 24, h: 3 / 22 };
  * The close: MUNCH, full grown on the cardboard, opens its mouth and the dark inside it
  * swallows the screen. The last words are written in there.
  */
-export function Finale({ tokenSymbol, buyHref, tokenAddress, copiedCA, onCopyCA }: FinaleProps) {
+export function Finale({ tokenSymbol, buyHref, tokenAddress, copiedCA, onCopyCA, xHref, xHandle }: FinaleProps) {
   const ref = useRef<HTMLElement>(null);
 
   useGSAP(
@@ -98,6 +101,14 @@ export function Finale({ tokenSymbol, buyHref, tokenAddress, copiedCA, onCopyCA 
                 {copiedCA ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
                 {copiedCA ? 'copied' : 'copy CA'}
               </button>
+            ) : null}
+            {xHref ? (
+              <a href={xHref} target="_blank" rel="noreferrer" className="btn-chip-dark no-underline" aria-label={`Follow ${xHandle ?? 'MUNCH'} on X`}>
+                <svg className="h-4 w-4 fill-current" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M18.9 2H22l-6.8 7.8L23.2 22H17l-4.9-6.4L6.5 22H3.4l7.2-8.2L2.9 2h6.4l4.4 5.8L18.9 2Zm-1.1 17.8h1.7L8.3 4.1H6.5l11.3 15.7Z" />
+                </svg>
+                follow {xHandle}
+              </a>
             ) : null}
           </div>
         </div>
