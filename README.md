@@ -2,6 +2,8 @@
 
 The public site is MUNCH, a pixel virtual pet that only eats $MUNCH: every trade fills its bowl (the fee escrow), the auto-feeder (the bot) buys $MUNCH back and MUNCH eats it at `0x…dEaD`. It evolves with the real share of supply burned. See `PRODUCT.md` for the lore.
 
+Site: **https://feedmunch.fun** · X: **[@munch_rh](https://x.com/munch_rh)**
+
 An autonomous token liquidity, buyback, and burn engine deployed on **Robinhood Chain (Chain ID: 4663)** integrated with **Pons Family v2**.
 
 ---

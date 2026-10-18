@@ -4,6 +4,8 @@
 
 ## Current brand (2026-10-17): MUNCH ($MUNCH)
 
+Domain: **feedmunch.fun** (canonical `https://feedmunch.fun/`). X: **@munch_rh** (https://x.com/munch_rh).
+
 The public site was redrawn as **MUNCH ($MUNCH)**, a pixel virtual pet (Tamagotchi-style, original art, no Bandai names, logos or shells). Engine, API, tokenomics and `/memex` are unchanged.
 
 - Lore: someone threw a cheap virtual-pet handheld into 0x…dEaD, the address nothing comes back from. The egg hatched anyway. The only food down there is tokens, and MUNCH only eats $MUNCH.
