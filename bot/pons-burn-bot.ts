@@ -10,6 +10,7 @@
  */
 
 import http from "http";
+import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import { ethers } from "ethers";
@@ -549,6 +550,22 @@ executeCycle().catch(console.error);
 // -------------------------------------------------------------
 // NATIVE HTTP API SERVER (Untuk komunikasi langsung dengan /memex)
 // -------------------------------------------------------------
+
+// Rahasia admin untuk /memex. Tanpa ADMIN_SECRET (min. 16 karakter), API menolak SEMUA perubahan config:
+// token, treasury dan private key hanya bisa diganti oleh yang tahu rahasianya.
+const ADMIN_SECRET = (process.env.ADMIN_SECRET || "").trim();
+const ADMIN_ENABLED = ADMIN_SECRET.length >= 16;
+const MAX_BODY_BYTES = 16 * 1024;
+
+function isAdmin(req: http.IncomingMessage): boolean {
+  if (!ADMIN_ENABLED) return false;
+  const got = String(req.headers["x-admin-secret"] || "");
+  // bandingkan hash, waktu konstan: panjang dan isi rahasia tidak bocor lewat timing
+  const a = crypto.createHash("sha256").update(got).digest();
+  const b = crypto.createHash("sha256").update(ADMIN_SECRET).digest();
+  return crypto.timingSafeEqual(a, b);
+}
+
 function sendJSON(res: http.ServerResponse, status: number, data: any) {
   res.writeHead(status, {
     "Content-Type": "application/json",
@@ -598,11 +615,25 @@ const server = http.createServer(async (req, res) => {
 
   // Endpoint 2: POST /api/config atau POST /api/admin/save
   if (req.method === "POST" && (url === "/api/config" || url === "/api/admin/save" || url === "/api/config/")) {
+    if (!ADMIN_ENABLED) {
+      addLog("warn", "[SECURITY] Perubahan config ditolak: ADMIN_SECRET belum di-set di bot.");
+      return sendJSON(res, 503, { success: false, error: "ADMIN_SECRET is not set on the bot (min. 16 characters), so admin changes are disabled." });
+    }
+    if (!isAdmin(req)) {
+      addLog("warn", "[SECURITY] Perubahan config ditolak: admin secret salah.");
+      return sendJSON(res, 401, { success: false, error: "Wrong admin secret." });
+    }
     let body = "";
+    let tooBig = false;
     req.on("data", (chunk) => {
       body += chunk;
+      if (body.length > MAX_BODY_BYTES) {
+        tooBig = true;
+        req.destroy();
+      }
     });
     req.on("end", () => {
+      if (tooBig) return;
       try {
         const data = JSON.parse(body || "{}");
         let updated = false;
@@ -676,6 +707,7 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log(`   Server Port      : ${PORT}`);
   console.log(`   Admin API Ready  : http://localhost:${PORT}/api/status`);
   console.log(`   Operator Wallet  : ${botState.walletAddress || "Not ready"}`);
+  console.log(`   Admin Changes    : ${ADMIN_ENABLED ? "ON (x-admin-secret required)" : "OFF (set ADMIN_SECRET, min. 16 chars, to enable /memex)"}`);
   console.log(`   Initial Status   : ${isValidAddress(currentConfig.tokenAddress) ? "ACTIVE" : "STANDBY (Awaiting CA from /memex)"}`);
   console.log("==========================================================");
 });

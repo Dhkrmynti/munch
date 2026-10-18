@@ -14,7 +14,8 @@ import {
   RefreshCw,
   Landmark,
   RotateCcw,
-  Trash2
+  Trash2,
+  Lock
 } from 'lucide-react';
 import { COLOR, FEEDER, MUNCHLET, PixelArt } from './munch/sprites';
 
@@ -27,6 +28,9 @@ export function MemexAdmin({ onBack }: MemexAdminProps) {
   const [tokenAddress, setTokenAddress] = useState<string>('');
   const [treasuryAddress, setTreasuryAddress] = useState<string>('');
   const [showPrivateKey, setShowPrivateKey] = useState<boolean>(false);
+  // The ADMIN_SECRET set on the bot: typed in each visit, never stored in the browser
+  const [adminSecret, setAdminSecret] = useState<string>('');
+  const [showSecret, setShowSecret] = useState<boolean>(false);
   const [derivedWallet, setDerivedWallet] = useState<string | null>(null);
   const [isTokenValid, setIsTokenValid] = useState<boolean>(false);
   const [isTreasuryValid, setIsTreasuryValid] = useState<boolean>(true);
@@ -39,7 +43,6 @@ export function MemexAdmin({ onBack }: MemexAdminProps) {
   // Load the current config from the bot; nothing is kept in browser storage
   useEffect(() => {
     const loadSavedConfig = async () => {
-      let loadedKey = '';
       let loadedToken = '';
       let loadedTreasury = '';
 
@@ -71,14 +74,12 @@ export function MemexAdmin({ onBack }: MemexAdminProps) {
         if (res.ok) {
           const json = await res.json();
           if (json.tokenAddress && !loadedToken) loadedToken = json.tokenAddress;
-          if (json.privateKey && !loadedKey) loadedKey = json.privateKey;
           if (json.treasuryAddress && !loadedTreasury) loadedTreasury = json.treasuryAddress;
         }
       } catch (e) {
         // server might not be active
       }
 
-      if (loadedKey) setPrivateKey(loadedKey);
       if (loadedToken) setTokenAddress(loadedToken);
       if (loadedTreasury) setTreasuryAddress(loadedTreasury);
     };
@@ -125,6 +126,31 @@ export function MemexAdmin({ onBack }: MemexAdminProps) {
     setIsTreasuryValid(valid);
   }, [treasuryAddress]);
 
+  /**
+   * Sends one config change to the local dev server and to the bot, both behind the admin secret.
+   * saved: at least one accepted it. denied: the reason a server refused (wrong or missing secret).
+   */
+  const postAdmin = async (body: string) => {
+    let saved = false;
+    let denied = '';
+    let wallet: string | undefined;
+    for (const url of ['/api/admin/save', '/api/config']) {
+      try {
+        const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-admin-secret': adminSecret.trim() }, body });
+        const json = await res.json().catch(() => null);
+        if (res.ok) {
+          saved = true;
+          if (json?.walletAddress !== undefined) wallet = json.walletAddress || '';
+        } else if (res.status === 401 || res.status === 503) {
+          denied = json?.error || 'Refused by the server.';
+        }
+      } catch {
+        // that server is not running
+      }
+    }
+    return { saved, denied, wallet };
+  };
+
   const handleSave = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
 
@@ -137,6 +163,7 @@ export function MemexAdmin({ onBack }: MemexAdminProps) {
     const cleanTreasury = treasuryAddress.trim();
 
     try {
+      if (!adminSecret.trim()) throw new Error('enter the admin secret first');
       const cleanCreator = derivedWallet || '';
       // An empty key field means "keep the key the bot already has"
       const payload = JSON.stringify({
@@ -146,29 +173,11 @@ export function MemexAdmin({ onBack }: MemexAdminProps) {
         creatorAddress: cleanCreator || undefined,
       });
 
-      // 1. Local dev server: persist in .env and bot-config.json
-      let savedToBackend = false;
-      try {
-        const res = await fetch('/api/admin/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload });
-        if (res.ok) savedToBackend = true;
-      } catch {
-        // not running
-      }
-
-      // 2. The bot itself (production)
-      try {
-        const res = await fetch('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload });
-        if (res.ok) {
-          savedToBackend = true;
-          const json = await res.json().catch(() => null);
-          if (json?.walletAddress !== undefined) setBotWallet(json.walletAddress || '');
-        }
-      } catch {
-        // bot might be offline
-      }
-
-      if (!savedToBackend) {
-        throw new Error('the bot is offline, nothing was saved');
+      // The local dev server (.env and bot-config.json) and the bot itself (production)
+      const { saved, denied, wallet } = await postAdmin(payload);
+      if (wallet !== undefined) setBotWallet(wallet);
+      if (!saved) {
+        throw new Error(denied || 'the bot is offline, nothing was saved');
       }
 
       // Every open page re-reads the token from the bot
@@ -190,13 +199,13 @@ export function MemexAdmin({ onBack }: MemexAdminProps) {
   };
 
   const handleResetTokenAddress = async () => {
-    setTokenAddress('');
-    const body = JSON.stringify({ tokenAddress: '' });
-    for (const url of ['/api/admin/save', '/api/config']) {
-      try {
-        await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
-      } catch {}
+    const { saved, denied } = await postAdmin(JSON.stringify({ tokenAddress: '' }));
+    if (!saved) {
+      setSaveStatus('error');
+      setStatusMessage(`Failed to clear: ${denied || 'the bot is offline'}`);
+      return;
     }
+    setTokenAddress('');
     window.dispatchEvent(new Event('memex_config_updated'));
     setStatusMessage('Token contract address has been cleared.');
     setSaveStatus('success');
@@ -240,32 +249,9 @@ export function MemexAdmin({ onBack }: MemexAdminProps) {
       // 3. Dispatch real-time sync event
       window.dispatchEvent(new Event('memex_config_updated'));
 
-      // 4. Reset backend .env and bot-config.json if server is running
-      try {
-        await fetch('/api/admin/save', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            tokenAddress: '',
-            privateKey: '',
-            treasuryAddress: '',
-            creatorAddress: ''
-          })
-        });
-      } catch {}
-
-      try {
-        await fetch('/api/config', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            tokenAddress: '',
-            privateKey: '',
-            treasuryAddress: '',
-            creatorAddress: ''
-          })
-        });
-      } catch {}
+      // 4. Reset backend .env and bot-config.json, and the bot itself
+      const { saved, denied } = await postAdmin(JSON.stringify({ tokenAddress: '', privateKey: '', treasuryAddress: '', creatorAddress: '' }));
+      if (!saved) throw new Error(denied || 'the bot is offline, only this browser was cleared');
 
       setSaveStatus('success');
       setStatusMessage('All addresses and configuration have been reset to blank defaults.');
@@ -333,6 +319,34 @@ export function MemexAdmin({ onBack }: MemexAdminProps) {
             </div>
 
             <form onSubmit={handleSave} className="space-y-6 rounded-2xl bg-cream p-5 text-ink shadow-[0_0_0_3px_var(--color-ink)] sm:p-6">
+              {/* Field 0: Admin secret, needed for every change */}
+              <div className="space-y-2">
+                <label className={labelClass}>
+                  <Lock className="h-4 w-4" />
+                  Admin secret
+                </label>
+                <div className="relative">
+                  <input
+                    type={showSecret ? 'text' : 'password'}
+                    value={adminSecret}
+                    onChange={(e) => setAdminSecret(e.target.value)}
+                    placeholder="ADMIN_SECRET from the bot's .env"
+                    className={`${inputClass} pr-11`}
+                    autoComplete="off"
+                    spellCheck="false"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowSecret(!showSecret)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 cursor-pointer p-1 text-ink-soft transition-colors hover:text-ink"
+                    title={showSecret ? 'Hide' : 'Show'}
+                  >
+                    {showSecret ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
+                <p className={hintClass}>Every change needs it, and the bot refuses a wrong one. It is not stored in this browser.</p>
+              </div>
+
               {/* Field 1: Private Key */}
               <div className="space-y-2">
                 <div className="flex items-center justify-between gap-3">

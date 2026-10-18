@@ -3,6 +3,24 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import fs from 'fs'
 import path from 'path'
+import crypto from 'crypto'
+
+/** The admin secret the bot also checks: ADMIN_SECRET from the environment or from .env (min. 16 chars). */
+function adminSecret(): string {
+  let secret = (process.env.ADMIN_SECRET || '').trim()
+  const envPath = path.resolve(process.cwd(), '.env')
+  if (!secret && fs.existsSync(envPath)) {
+    const m = fs.readFileSync(envPath, 'utf-8').match(/^ADMIN_SECRET=["']?([^"'\r\n]+)["']?/m)
+    if (m) secret = m[1].trim()
+  }
+  return secret.length >= 16 ? secret : ''
+}
+
+function sameSecret(got: string, want: string): boolean {
+  const a = crypto.createHash('sha256').update(got).digest()
+  const b = crypto.createHash('sha256').update(want).digest()
+  return crypto.timingSafeEqual(a, b)
+}
 
 function adminSavePlugin() {
   return {
@@ -15,17 +33,15 @@ function adminSavePlugin() {
         if (url === '/api/admin/config' && req.method === 'GET') {
           try {
             const envPath = path.resolve(process.cwd(), '.env')
+            // the private key is never sent back to the browser, not even in dev
             let tokenAddress = ''
-            let privateKey = ''
             let treasuryAddress = ''
 
             if (fs.existsSync(envPath)) {
               const envContent = fs.readFileSync(envPath, 'utf-8')
               const tokenMatch = envContent.match(/VITE_TOKEN_ADDRESS=["']?([^"'\r\n]+)["']?/)
-              const keyMatch = envContent.match(/CREATOR_PRIVATE_KEY=["']?([^"'\r\n]+)["']?/)
               const treasuryMatch = envContent.match(/(?:TREASURY_ADDRESS|VITE_CREATOR_ADDRESS)=["']?([^"'\r\n]+)["']?/)
               if (tokenMatch) tokenAddress = tokenMatch[1]
-              if (keyMatch) privateKey = keyMatch[1]
               if (treasuryMatch) treasuryAddress = treasuryMatch[1]
             }
 
@@ -34,13 +50,12 @@ function adminSavePlugin() {
               try {
                 const saved = JSON.parse(fs.readFileSync(configPath, 'utf-8'))
                 if (saved.tokenAddress && !tokenAddress) tokenAddress = saved.tokenAddress
-                if (saved.privateKey && !privateKey) privateKey = saved.privateKey
                 if (saved.treasuryAddress && !treasuryAddress) treasuryAddress = saved.treasuryAddress
               } catch (e) {}
             }
 
             res.writeHead(200, { 'Content-Type': 'application/json' })
-            res.end(JSON.stringify({ success: true, tokenAddress, privateKey, treasuryAddress }))
+            res.end(JSON.stringify({ success: true, tokenAddress, treasuryAddress }))
             return
           } catch (err: any) {
             res.writeHead(500, { 'Content-Type': 'application/json' })
@@ -51,6 +66,12 @@ function adminSavePlugin() {
 
         // 2. POST /api/admin/save
         if (url === '/api/admin/save' && req.method === 'POST') {
+          const secret = adminSecret()
+          if (!secret || !sameSecret(String(req.headers['x-admin-secret'] || ''), secret)) {
+            res.writeHead(secret ? 401 : 503, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ success: false, error: secret ? 'Wrong admin secret.' : 'ADMIN_SECRET is not set (min. 16 characters), so admin changes are disabled.' }))
+            return
+          }
           let body = ''
           req.on('data', (chunk: any) => {
             body += chunk
