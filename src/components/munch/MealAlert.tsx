@@ -3,7 +3,7 @@ import gsap from 'gsap';
 import { useGSAP } from '@gsap/react';
 import { ExternalLink, X } from 'lucide-react';
 import type { BurnLedgerEntry } from '../../types';
-import { sounds } from '../../utils/audio';
+import { sfx } from './sfx';
 import { Pet } from './Pet';
 import type { StageKey } from './stages';
 
@@ -15,7 +15,6 @@ interface MealAlertProps {
   explorerUrl: string;
   stage: StageKey;
   crack: number;
-  sound: boolean;
   /** true while the alert is up, so the pet on the pack chews along */
   onNom: (on: boolean) => void;
 }
@@ -34,12 +33,6 @@ const msOf = (e: BurnLedgerEntry) => (e.timestamp && e.timestamp < 1e12 ? e.time
 const compact = (n: number) => new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 2, roundingMode: 'floor' } as Intl.NumberFormatOptions).format(n);
 const fmt = (n: number) => new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(Math.floor(n));
 
-/** The beep a handheld makes when it wants you: a square-wave arpeggio, then two chomps. */
-function chiptune() {
-  [1046.5, 1318.5, 1568, 2093].forEach((f, i) => setTimeout(() => sounds.playTone(f, 'square', 0.09, 0.05), i * 75));
-  [196, 147].forEach((f, i) => setTimeout(() => sounds.playTone(f, 'square', 0.12, 0.09), 420 + i * 160));
-}
-
 /** The "!" a virtual pet flashes when it needs you, drawn on the pixel grid. */
 function Attention() {
   return (
@@ -53,15 +46,21 @@ function Attention() {
 
 /**
  * The attention call. When the auto-feeder lands a real meal while the page is open, the
- * handheld beeps and the screen says so, with the amount and the transaction.
+ * handheld beeps and the screen says so, with the amount and the transaction. It also
+ * goes crk when the egg cracks a step further while the page is open.
  * Add ?nom (or ?nom=1234567) to the URL to play one for a recording.
  */
-export function MealAlert({ burnLedger, tokenSymbol, explorerUrl, stage, crack, sound, onNom }: MealAlertProps) {
+export function MealAlert({ burnLedger, tokenSymbol, explorerUrl, stage, crack, onNom }: MealAlertProps) {
   const [meal, setMeal] = useState<Meal | null>(null);
   const seen = useRef<Set<string> | null>(null);
   const boxRef = useRef<HTMLDivElement>(null);
-  const soundRef = useRef(sound);
-  soundRef.current = sound;
+  const lastCrack = useRef<number | null>(null);
+
+  // the egg cracked a step further while you watched
+  useEffect(() => {
+    if (lastCrack.current !== null && crack > lastCrack.current) sfx.play('crack');
+    lastCrack.current = crack;
+  }, [crack]);
 
   // a new meal: one not on the screen before, written in the last few minutes
   useEffect(() => {
@@ -87,7 +86,7 @@ export function MealAlert({ burnLedger, tokenSymbol, explorerUrl, stage, crack, 
   useEffect(() => {
     if (!meal) return;
     onNom(true);
-    if (soundRef.current) chiptune();
+    sfx.play('nom');
     const id = window.setTimeout(() => setMeal(null), SHOW_MS);
     return () => {
       window.clearTimeout(id);

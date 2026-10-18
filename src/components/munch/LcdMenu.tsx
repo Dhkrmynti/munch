@@ -3,6 +3,7 @@ import gsap from 'gsap';
 import { ScrollTrigger } from 'gsap/ScrollTrigger';
 import { useGSAP } from '@gsap/react';
 import { ICONS, LCD, LCD_INV, PixelArt } from './sprites';
+import { sfx } from './sfx';
 
 gsap.registerPlugin(ScrollTrigger, useGSAP);
 
@@ -36,6 +37,7 @@ export function LcdMenu() {
           activeRef.current = i;
           setActive(i);
           setSweep((n) => n + 1);
+          sfx.play('blip');
         },
       });
     });

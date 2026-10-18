@@ -17,6 +17,7 @@ import { BoxBack } from './components/munch/BoxBack';
 import { Finale } from './components/munch/Finale';
 import { MealAlert } from './components/munch/MealAlert';
 import { STAGES, crackLevel, stageIndexFor } from './components/munch/stages';
+import { sfx } from './components/munch/sfx';
 import { COLOR, MUNCHLET, PixelArt } from './components/munch/sprites';
 
 gsap.registerPlugin(ScrollTrigger, useGSAP);
@@ -73,6 +74,28 @@ export function App() {
     return () => window.removeEventListener('scroll', onScroll);
   }, []);
 
+  // Sound: the speaker button mutes everything, the choice is remembered on this device,
+  // and the music starts on the first tap or key (browsers allow audio only after one)
+  useEffect(() => {
+    try {
+      if (localStorage.getItem('munch_sound') === 'off') setConfig((c) => ({ ...c, soundEnabled: false }));
+    } catch {
+      // storage blocked: sound stays on
+    }
+    const unlock = () => sfx.unlock();
+    window.addEventListener('pointerdown', unlock, { once: true });
+    window.addEventListener('keydown', unlock, { once: true });
+    return () => {
+      window.removeEventListener('pointerdown', unlock);
+      window.removeEventListener('keydown', unlock);
+    };
+  }, [setConfig]);
+
+  useEffect(() => {
+    sounds.enabled = config.soundEnabled;
+    sfx.setEnabled(config.soundEnabled);
+  }, [config.soundEnabled]);
+
   // Late fonts change line heights; re-measure every trigger once they land
   useEffect(() => {
     document.fonts?.ready.then(() => ScrollTrigger.refresh());
@@ -81,7 +104,27 @@ export function App() {
   const feedOne = () => {
     setFed((prev) => prev + 1);
     setSayIndex((prev) => (prev + 1) % MUNCH_SAYS.length);
-    sounds.playBuybackSound();
+    sfx.play('coin');
+    window.setTimeout(() => sfx.play('chomp'), 320);
+  };
+
+  const openLog = () => {
+    setIsLogOpen(true);
+    sfx.play('blip');
+  };
+
+  const toggleSound = () => {
+    const on = !config.soundEnabled;
+    setConfig({ ...config, soundEnabled: on });
+    try {
+      localStorage.setItem('munch_sound', on ? 'on' : 'off');
+    } catch {
+      // storage blocked: the choice lasts for this visit
+    }
+    if (on) {
+      sfx.setEnabled(true);
+      sfx.play('blip');
+    }
   };
 
   const navigateToHome = () => {
@@ -126,14 +169,14 @@ export function App() {
     if (!config.tokenAddress) return;
     navigator.clipboard.writeText(config.tokenAddress);
     setCopiedCA(true);
-    sounds.playClaimSound();
+    sfx.play('blip');
     setTimeout(() => setCopiedCA(false), 2500);
   };
 
   const copyDead = () => {
     navigator.clipboard.writeText(config.deadAddress || PONS_V2_CONFIG.contracts.deadAddress);
     setCopiedDead(true);
-    sounds.playBurnSound();
+    sfx.play('blip');
     setTimeout(() => setCopiedDead(false), 2000);
   };
 
@@ -179,7 +222,7 @@ export function App() {
             <a href="#feeding" className="no-underline hover:text-sun">feeding</a>
             <a href="#meals" className="no-underline hover:text-sun">meals</a>
             <a href="#story" className="no-underline hover:text-sun">story</a>
-            <button type="button" onClick={() => setIsLogOpen(true)} className="cursor-pointer font-semibold hover:text-sun">
+            <button type="button" onClick={openLog} className="cursor-pointer font-semibold hover:text-sun">
               full log
             </button>
           </nav>
@@ -187,7 +230,7 @@ export function App() {
           <div className="flex items-center gap-3">
             <button
               type="button"
-              onClick={() => setConfig({ ...config, soundEnabled: !config.soundEnabled })}
+              onClick={toggleSound}
               title={config.soundEnabled ? 'Mute MUNCH' : 'Turn the sounds on'}
               aria-label={config.soundEnabled ? 'Mute MUNCH' : 'Turn the sounds on'}
               className="flex h-10 w-10 cursor-pointer items-center justify-center rounded-full text-cream shadow-[inset_0_0_0_2px_var(--color-ink-soft)] transition-colors hover:text-sun hover:shadow-[inset_0_0_0_2px_var(--color-sun)]"
@@ -228,7 +271,7 @@ export function App() {
           onCopyCA={copyCA}
           buyHref={buyUrl(config.tokenAddress)}
           chartHref={chartUrl(config.tokenAddress)}
-          onOpenLog={() => setIsLogOpen(true)}
+          onOpenLog={openLog}
           onFeed={feedOne}
           fed={fed}
           say={`MUNCH: “${MUNCH_SAYS[sayIndex]}”`}
@@ -248,9 +291,9 @@ export function App() {
             explorerUrl={EXPLORER_URL}
             copiedDead={copiedDead}
             onCopyDead={copyDead}
-            onOpenLog={() => setIsLogOpen(true)}
+            onOpenLog={openLog}
           />
-          <PetStatus state={state} config={config} live={isConfigured} fill={bowlFill} burnedPercent={burnedPercent} totalBurned={totalTokensBurned} onOpenLog={() => setIsLogOpen(true)} />
+          <PetStatus state={state} config={config} live={isConfigured} fill={bowlFill} burnedPercent={burnedPercent} totalBurned={totalTokensBurned} onOpenLog={openLog} />
         </div>
 
         {/* ───────── The back of the box ───────── */}
@@ -282,7 +325,6 @@ export function App() {
         explorerUrl={EXPLORER_URL}
         stage={STAGES[stageIndexFor(burnedPercent)].key}
         crack={crackLevel(burnedPercent)}
-        sound={config.soundEnabled}
         onNom={setNomming}
       />
 
