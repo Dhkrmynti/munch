@@ -39,3 +39,9 @@ bot-config.json
 # Local e2e run (test/e2e.ts)
 .e2e/
 bot-run.json
+
+# X marketing kit: kept on the maker's machine only, never in the repo
+konten-x/
+
+# TypeScript build cache
+tsconfig.tsbuildinfo
